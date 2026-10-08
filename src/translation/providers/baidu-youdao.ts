@@ -5,6 +5,8 @@ import {requireSetting, TranslationError} from "../errors";
 import type {TranslationProviderAdapter} from "../types";
 import {getProviderConfig} from "./shared";
 
+const BAIDU_TRANSLATE_URL = "https://fanyi-api.baidu.com/api/trans/vip/translate";
+
 interface BaiduResponse {
 	from?: string;
 	to?: string;
@@ -22,6 +24,27 @@ interface YoudaoResponse {
 	l?: string;
 }
 
+/** 百度签名：MD5(appid + q + salt + 密钥)，q 为 UTF-8 原文，不做 URL encode */
+export function buildBaiduSign(appId: string, query: string, salt: string, secret: string): string {
+	return md5(`${appId}${query}${salt}${secret}`);
+}
+
+export function buildBaiduRequestBody(options: {
+	appId: string;
+	secret: string;
+	query: string;
+	from: string;
+	to: string;
+	salt?: string;
+}): string {
+	const appid = options.appId.trim();
+	const secret = options.secret.trim();
+	const q = options.query;
+	const salt = options.salt ?? String(Date.now());
+	const sign = buildBaiduSign(appid, q, salt, secret);
+	return new URLSearchParams({q, from: options.from, to: options.to, appid, salt, sign}).toString();
+}
+
 export function createBaiduAdapter(): TranslationProviderAdapter {
 	return {
 		id: "baidu",
@@ -29,16 +52,23 @@ export function createBaiduAdapter(): TranslationProviderAdapter {
 		kind: "pure-translation",
 		async translate(request) {
 			const config = getProviderConfig(request);
-			const appId = requireSetting(config.appId, "Baidu app ID");
-			const secret = requireSetting(config.appSecret, "Baidu app secret");
-			const salt = String(Date.now());
+			const appId = requireSetting(config.appId, "Baidu app ID").trim();
+			const secret = requireSetting(config.appSecret, "Baidu app secret").trim();
 			const from = normalizeLanguageForProvider(request.sourceLanguage, "baidu");
 			const to = normalizeLanguageForProvider(request.targetLanguage, "baidu");
-			const sign = md5(`${appId}${request.text}${salt}${secret}`);
-			const params = new URLSearchParams({q: request.text, from, to, appid: appId, salt, sign});
+			const body = buildBaiduRequestBody({
+				appId,
+				secret,
+				query: request.text,
+				from,
+				to,
+			});
 			const result = await requestJson<BaiduResponse>({
-				url: `https://fanyi-api.baidu.com/api/trans/vip/translate?${params.toString()}`,
+				url: BAIDU_TRANSLATE_URL,
+				method: "POST",
 				timeoutMs: request.settings.requestTimeout,
+				headers: {"Content-Type": "application/x-www-form-urlencoded"},
+				body,
 			});
 			if (result.error_code) {
 				throw new TranslationError(`Baidu error ${result.error_code}: ${result.error_msg ?? "Unknown error"}`);
